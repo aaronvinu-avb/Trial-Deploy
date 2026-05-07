@@ -218,17 +218,6 @@ function getFreshness(lastUpdatedStr) {
   return { label: `Updated ${diffDays} day${diffDays === 1 ? '' : 's'} ago`, stale: false, variant: 'recent' }
 }
 
-function daysUntilDue(project) {
-  const today = startOfDay(new Date())
-  const due = startOfDay(parseDate(project.dueDate))
-  return Math.round((due.getTime() - today.getTime()) / 86400000)
-}
-
-function isDueThisWeek(project) {
-  const d = daysUntilDue(project)
-  return d >= 0 && d <= 7
-}
-
 const cardShadow = 'shadow-[0_1px_2px_rgba(0,0,0,0.045),0_4px_12px_rgba(0,0,0,0.055)]'
 
 /** Single split-workspace shell: lighter than stacked cards */
@@ -248,8 +237,6 @@ function Dashboard() {
     businessUnit: 'All',
   })
   const [searchQuery, setSearchQuery] = useState('')
-  /** Shortcuts: due window / overdue (status dropdown stays All) */
-  const [dateFocus, setDateFocus] = useState(null)
   /** Attention strip drill-down */
   const [attentionFocus, setAttentionFocus] = useState(null)
   const [createDrawerOpen, setCreateDrawerOpen] = useState(false)
@@ -332,16 +319,13 @@ function Dashboard() {
         filters.businessUnit === 'All' || project.businessUnit === filters.businessUnit
       const searchMatch = !q || project.name.toLowerCase().includes(q)
 
-      if (dateFocus === 'dueThisWeek' && !isDueThisWeek(project)) return false
-      if (dateFocus === 'overdue' && !isOverdueProject(project)) return false
-
       if (attentionFocus === 'overdue' && !isOverdueProject(project)) return false
       if (attentionFocus === 'stale' && !isStaleLastUpdated(project.lastUpdated)) return false
       if (attentionFocus === 'escalation' && !project.escalationRequired) return false
 
       return statusMatch && ownerMatch && businessUnitMatch && searchMatch
     })
-  }, [decoratedProjects, filters, searchQuery, dateFocus, attentionFocus])
+  }, [decoratedProjects, filters, searchQuery, attentionFocus])
 
   /** Portfolio-level counts (always all loaded projects) */
   const attention = useMemo(() => {
@@ -421,62 +405,44 @@ function Dashboard() {
   function clearFilters() {
     setFilters({ status: 'All', owner: 'All', businessUnit: 'All' })
     setSearchQuery('')
-    setDateFocus(null)
     setAttentionFocus(null)
   }
 
   function setStatusFilter(value) {
     setFilters((prev) => ({ ...prev, status: value }))
-    setDateFocus(null)
   }
 
   function toggleAttentionFocus(key) {
     setAttentionFocus((prev) => (prev === key ? null : key))
   }
 
-  function applyQuickChip(kind) {
+  function applyStatusViewChip(kind) {
     setAttentionFocus(null)
     if (kind === 'all') {
       setFilters((prev) => ({ ...prev, status: 'All' }))
-      setDateFocus(null)
       return
     }
     if (kind === 'onTrack') {
       setFilters((prev) => ({ ...prev, status: 'On Track' }))
-      setDateFocus(null)
       return
     }
     if (kind === 'atRisk') {
       setFilters((prev) => ({ ...prev, status: 'At Risk' }))
-      setDateFocus(null)
       return
     }
     if (kind === 'needsEscalation') {
       setFilters((prev) => ({ ...prev, status: 'Needs Escalation' }))
-      setDateFocus(null)
-      return
-    }
-    if (kind === 'dueThisWeek') {
-      setFilters((prev) => ({ ...prev, status: 'All' }))
-      setDateFocus('dueThisWeek')
-      return
-    }
-    if (kind === 'overdue') {
-      setFilters((prev) => ({ ...prev, status: 'All' }))
-      setDateFocus('overdue')
     }
   }
 
   const chipAllActive =
-    filters.status === 'All' && dateFocus === null && attentionFocus === null
+    filters.status === 'All' && attentionFocus === null
   const chipOnTrackActive =
-    filters.status === 'On Track' && dateFocus === null && attentionFocus === null
+    filters.status === 'On Track' && attentionFocus === null
   const chipAtRiskActive =
-    filters.status === 'At Risk' && dateFocus === null && attentionFocus === null
+    filters.status === 'At Risk' && attentionFocus === null
   const chipNeedsEscActive =
-    filters.status === 'Needs Escalation' && dateFocus === null && attentionFocus === null
-  const chipDueWeekActive = dateFocus === 'dueThisWeek' && attentionFocus === null
-  const chipOverdueActive = dateFocus === 'overdue' && attentionFocus === null
+    filters.status === 'Needs Escalation' && attentionFocus === null
 
   function closeCreateDrawer() {
     setCreateDrawerOpen(false)
@@ -741,8 +707,8 @@ function Dashboard() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-3 rounded-xl bg-surface-muted/60 px-3 py-3 sm:flex-row sm:items-center sm:gap-4 md:px-4">
-              <label className="relative block min-h-10 min-w-0 flex-1" htmlFor="project-search">
+            <div className="border-t border-line pt-5">
+              <label className="relative block min-h-10 w-full" htmlFor="project-search">
                 <span className="sr-only">Search projects</span>
                 <span
                   className="pointer-events-none absolute left-3 top-1/2 z-[1] -translate-y-1/2 text-mid-grey"
@@ -763,7 +729,7 @@ function Dashboard() {
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Search projects..."
                   autoComplete="off"
-                  className="h-10 w-full rounded-lg border border-line bg-white pl-10 pr-10 text-[13px] font-medium text-ink shadow-[inset_0_1px_2px_rgba(0,0,0,0.03)] outline-none transition-colors placeholder:text-ink-muted/65 focus:border-bank focus:ring-2 focus:ring-[color:var(--color-focus-ring)]"
+                  className="h-11 w-full rounded-lg border border-line bg-surface-muted pl-10 pr-10 text-[13px] font-medium text-ink shadow-[inset_0_1px_2px_rgba(0,0,0,0.03)] outline-none transition-colors placeholder:text-ink-muted/65 focus:border-bank focus:bg-white focus:ring-2 focus:ring-[color:var(--color-focus-ring)]"
                 />
                 {searchQuery ? (
                   <button
@@ -778,13 +744,6 @@ function Dashboard() {
                   </button>
                 ) : null}
               </label>
-              <FilterToolbarQuickChips
-                onSelect={applyQuickChip}
-                chipAllActive={chipAllActive}
-                chipNeedsEscActive={chipNeedsEscActive}
-                chipDueWeekActive={chipDueWeekActive}
-                chipOverdueActive={chipOverdueActive}
-              />
             </div>
           </div>
         </section>
@@ -800,14 +759,12 @@ function Dashboard() {
                 activeFocus={attentionFocus}
                 onToggle={toggleAttentionFocus}
               />
-              <QuickFilterChips
-                onSelect={applyQuickChip}
+              <StatusViewTabs
+                onSelect={applyStatusViewChip}
                 chipAllActive={chipAllActive}
                 chipOnTrackActive={chipOnTrackActive}
                 chipAtRiskActive={chipAtRiskActive}
                 chipNeedsEscActive={chipNeedsEscActive}
-                chipDueWeekActive={chipDueWeekActive}
-                chipOverdueActive={chipOverdueActive}
               />
               {filteredProjects.length === 0 ? (
                 projects.length === 0 ? (
@@ -1243,61 +1200,12 @@ function AttentionMetric({ kind, count, active, onToggle }) {
   )
 }
 
-function FilterToolbarQuickChips({
-  onSelect,
-  chipAllActive,
-  chipNeedsEscActive,
-  chipDueWeekActive,
-  chipOverdueActive,
-}) {
-  const chipBase =
-    'shrink-0 rounded-md border px-2.5 py-1.5 text-[11px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank sm:px-3 sm:text-[12px]'
-  const inactive =
-    'border-line bg-white text-ink-muted hover:border-mid-grey/40 hover:bg-white hover:text-ink'
-  const active =
-    'border-bank bg-bank-tint text-bank shadow-[inset_0_0_0_1px_rgba(219,0,17,0.12)]'
-  return (
-    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-      <button
-        type="button"
-        onClick={() => onSelect('all')}
-        className={`${chipBase} ${chipAllActive ? active : inactive}`}
-      >
-        All Projects
-      </button>
-      <button
-        type="button"
-        onClick={() => onSelect('needsEscalation')}
-        className={`${chipBase} ${chipNeedsEscActive ? active : inactive}`}
-      >
-        Needs Escalation
-      </button>
-      <button
-        type="button"
-        onClick={() => onSelect('dueThisWeek')}
-        className={`${chipBase} ${chipDueWeekActive ? active : inactive}`}
-      >
-        Due This Week
-      </button>
-      <button
-        type="button"
-        onClick={() => onSelect('overdue')}
-        className={`${chipBase} ${chipOverdueActive ? active : inactive}`}
-      >
-        Overdue
-      </button>
-    </div>
-  )
-}
-
-function QuickFilterChips({
+function StatusViewTabs({
   onSelect,
   chipAllActive,
   chipOnTrackActive,
   chipAtRiskActive,
   chipNeedsEscActive,
-  chipDueWeekActive,
-  chipOverdueActive,
 }) {
   const chipBase =
     'rounded-md border px-3 py-1.5 text-[12px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank'
@@ -1306,9 +1214,15 @@ function QuickFilterChips({
   const active =
     'border-bank bg-bank-tint text-bank shadow-[inset_0_0_0_1px_rgba(219,0,17,0.12)]'
   return (
-    <div className="flex flex-wrap gap-2 border-b border-line bg-white px-5 py-3 md:px-6">
+    <div
+      className="flex flex-wrap gap-2 border-b border-line bg-white px-5 py-3 md:px-6"
+      role="tablist"
+      aria-label="Project status view"
+    >
       <button
         type="button"
+        role="tab"
+        aria-selected={chipAllActive}
         onClick={() => onSelect('all')}
         className={`${chipBase} ${chipAllActive ? active : inactive}`}
       >
@@ -1316,6 +1230,8 @@ function QuickFilterChips({
       </button>
       <button
         type="button"
+        role="tab"
+        aria-selected={chipOnTrackActive}
         onClick={() => onSelect('onTrack')}
         className={`${chipBase} ${chipOnTrackActive ? active : inactive}`}
       >
@@ -1323,6 +1239,8 @@ function QuickFilterChips({
       </button>
       <button
         type="button"
+        role="tab"
+        aria-selected={chipAtRiskActive}
         onClick={() => onSelect('atRisk')}
         className={`${chipBase} ${chipAtRiskActive ? active : inactive}`}
       >
@@ -1330,24 +1248,12 @@ function QuickFilterChips({
       </button>
       <button
         type="button"
+        role="tab"
+        aria-selected={chipNeedsEscActive}
         onClick={() => onSelect('needsEscalation')}
         className={`${chipBase} ${chipNeedsEscActive ? active : inactive}`}
       >
         Needs Escalation
-      </button>
-      <button
-        type="button"
-        onClick={() => onSelect('dueThisWeek')}
-        className={`${chipBase} ${chipDueWeekActive ? active : inactive}`}
-      >
-        Due This Week
-      </button>
-      <button
-        type="button"
-        onClick={() => onSelect('overdue')}
-        className={`${chipBase} ${chipOverdueActive ? active : inactive}`}
-      >
-        Overdue
       </button>
     </div>
   )
