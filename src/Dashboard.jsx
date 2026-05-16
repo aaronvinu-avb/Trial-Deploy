@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 const INITIAL_DATA = [
@@ -14,6 +14,7 @@ const INITIAL_DATA = [
     escalationRequired: false,
     lastUpdated: '2026-05-06',
     tags: [],
+    blockerOwner: 'Legal — contracting',
   },
   {
     id: 'proj-002',
@@ -40,6 +41,12 @@ const INITIAL_DATA = [
     escalationRequired: true,
     lastUpdated: '2026-04-28',
     tags: [],
+    governanceStatus: 'Needs Escalation',
+    riskReason: 'Resource conflict is delaying delivery and requires executive alignment.',
+    targetResolutionDate: '2026-05-20',
+    escalationRecordRaised: true,
+    escalationRecordRef: 'ESC-2026-0142',
+    blockerOwner: '',
   },
   {
     id: 'proj-004',
@@ -108,6 +115,18 @@ const INITIAL_DATA = [
   },
 ]
 
+/**
+ * Portfolio governance snapshot: prior-week attention totals for week-on-week deltas.
+ * Set `attentionPriorWeekCounts` to `null` when no historical baseline exists (shows "—").
+ */
+const PORTFOLIO_GOVERNANCE_META = {
+  attentionPriorWeekCounts: {
+    overdue: 1,
+    stale: 2,
+    escalations: 1,
+  },
+}
+
 const TAG_OPTIONS = [
   'Compliance',
   'Digital',
@@ -132,6 +151,13 @@ function emptyCreateForm() {
     blocker: '',
     escalationRequired: false,
     tags: [],
+    governanceStatus: 'On Track',
+    riskReason: '',
+    targetResolutionDate: '',
+    escalationRecordRaised: null,
+    escalationRecordRef: '',
+    blockerOwner: '',
+    allowIncompleteEscalationRecord: false,
   }
 }
 
@@ -143,7 +169,8 @@ function validateCreateForm(form) {
   if (!(f.owner || '').trim()) errors.owner = 'Please enter an owner.'
   if (!f.dueDate) errors.dueDate = 'Please choose a due date.'
   if (!(f.nextAction || '').trim()) errors.nextAction = 'Please describe the next action.'
-  return errors
+  const gov = validateGovernanceForm(f)
+  return { ...errors, ...gov }
 }
 
 function generateProjectId(projects) {
@@ -169,24 +196,85 @@ function formatDate(value) {
 }
 
 function getStatus(project) {
+  const gs = project.governanceStatus
+  if (gs === 'Needs Escalation') return { key: 'red', label: 'Needs Escalation' }
+  if (gs === 'At Risk') return { key: 'amber', label: 'At Risk' }
+  if (gs === 'On Track') return { key: 'green', label: 'On Track' }
+
   const today = startOfDay(new Date())
   const due = startOfDay(parseDate(project.dueDate))
   const msPerDay = 86400000
   const daysUntilDue = Math.round((due.getTime() - today.getTime()) / msPerDay)
 
-  // 1. Red: due date before today OR escalation required
   if (due.getTime() < today.getTime() || project.escalationRequired) {
     return { key: 'red', label: 'Needs Escalation' }
   }
 
-  // 2. Amber: non-empty blocker OR due within 7 calendar days (today … +7)
   const dueWithinSevenDays = daysUntilDue >= 0 && daysUntilDue <= 7
   if ((project.blocker ?? '').trim() || dueWithinSevenDays) {
     return { key: 'amber', label: 'At Risk' }
   }
 
-  // 3. Green
   return { key: 'green', label: 'On Track' }
+}
+
+/** Table / tooltip: governance consistency issues */
+function getGovernanceWarnings(project) {
+  const warnings = []
+  const gs = project.governanceStatus
+  const label = getStatus(project).label
+  const blocker = (project.blocker ?? '').trim()
+
+  if (blocker) {
+    if (blocker.length < 10) warnings.push('Blocker description must be at least 10 characters.')
+    if (!(project.blockerOwner ?? '').trim()) warnings.push('Blocker owner is required when a blocker is recorded.')
+  }
+
+  const needsRiskFields = gs === 'At Risk' || gs === 'Needs Escalation'
+  if (needsRiskFields) {
+    const rr = (project.riskReason ?? '').trim()
+    if (rr.length < 10) warnings.push('Reason for risk must be at least 10 characters.')
+    if (!project.targetResolutionDate) warnings.push('Target resolution date is required for this status.')
+  }
+
+  const needsEscalationByLabel = label === 'Needs Escalation'
+  if (needsEscalationByLabel && project.escalationRecordRaised !== true) {
+    warnings.push('Needs Escalation: escalation record not confirmed. Add or confirm a record.')
+  }
+
+  return warnings
+}
+
+function validateGovernanceForm(f) {
+  const errors = {}
+  const gs = f.governanceStatus || 'On Track'
+  const blocker = (f.blocker ?? '').trim()
+
+  if (gs === 'At Risk' || gs === 'Needs Escalation') {
+    const rr = (f.riskReason ?? '').trim()
+    if (rr.length < 10) errors.riskReason = 'Enter at least 10 characters for the reason for risk.'
+    if (!f.targetResolutionDate) errors.targetResolutionDate = 'Target resolution date is required.'
+  }
+
+  if (gs === 'Needs Escalation') {
+    if (f.escalationRecordRaised !== true && f.escalationRecordRaised !== false) {
+      errors.escalationRecordRaised = 'Please confirm whether an escalation record has been raised.'
+    }
+  }
+
+  if (blocker) {
+    if (blocker.length < 10) errors.blocker = 'Blocker description must be at least 10 characters.'
+    if (!(f.blockerOwner ?? '').trim()) errors.blockerOwner = 'Blocker owner is required when a blocker is present.'
+  }
+
+  return errors
+}
+
+function needsEscalationRecordWarning(projectLike) {
+  return (
+    getStatus(projectLike).label === 'Needs Escalation' &&
+    projectLike.escalationRecordRaised !== true
+  )
 }
 
 function startOfDay(d) {
@@ -246,6 +334,10 @@ function Dashboard() {
   const [pendingDelete, setPendingDelete] = useState(null)
   const [deletePhraseInput, setDeletePhraseInput] = useState('')
   const [deleteUndo, setDeleteUndo] = useState(null)
+  const [raiseEscalationOpen, setRaiseEscalationOpen] = useState(false)
+  const escalateResumeRef = useRef(null)
+  const [editFieldErrors, setEditFieldErrors] = useState({})
+  const [editGovernanceBanner, setEditGovernanceBanner] = useState('')
 
   useEffect(() => {
     document.title = 'Project Tracker'
@@ -358,8 +450,19 @@ function Dashboard() {
     [decoratedProjects, selectedProjectId],
   )
 
+  function inferredGovernanceStatus(project) {
+    if (project.governanceStatus) return project.governanceStatus
+    const p = { ...project, governanceStatus: undefined }
+    const lbl = getStatus(p).label
+    if (lbl === 'Needs Escalation') return 'Needs Escalation'
+    if (lbl === 'At Risk') return 'At Risk'
+    return 'On Track'
+  }
+
   function startEdit() {
     if (!selectedProject) return
+    setEditFieldErrors({})
+    setEditGovernanceBanner('')
     setDraft({
       owner: selectedProject.owner,
       dueDate: selectedProject.dueDate,
@@ -368,6 +471,16 @@ function Dashboard() {
       nextAction: selectedProject.nextAction,
       escalationRequired: selectedProject.escalationRequired,
       tags: [...(selectedProject.tags || [])],
+      governanceStatus: inferredGovernanceStatus(selectedProject),
+      riskReason: selectedProject.riskReason ?? '',
+      targetResolutionDate: selectedProject.targetResolutionDate ?? '',
+      escalationRecordRaised:
+        selectedProject.escalationRecordRaised === true || selectedProject.escalationRecordRaised === false
+          ? selectedProject.escalationRecordRaised
+          : null,
+      escalationRecordRef: selectedProject.escalationRecordRef ?? '',
+      blockerOwner: selectedProject.blockerOwner ?? '',
+      allowIncompleteEscalationRecord: false,
     })
     setIsEditing(true)
   }
@@ -375,10 +488,41 @@ function Dashboard() {
   function cancelEdit() {
     setDraft(null)
     setIsEditing(false)
+    setEditFieldErrors({})
+    setEditGovernanceBanner('')
   }
 
   function saveEdit() {
     if (!selectedProject || !draft) return
+
+    if (draft.governanceStatus === 'Needs Escalation' && draft.escalationRecordRaised === false) {
+      escalateResumeRef.current = (ref) => {
+        setDraft((d) => ({
+          ...d,
+          escalationRecordRaised: true,
+          escalationRecordRef: ref,
+        }))
+      }
+      setRaiseEscalationOpen(true)
+      return
+    }
+
+    const merged = { ...selectedProject, ...draft }
+    const errors = validateGovernanceForm(merged)
+    if (Object.keys(errors).length > 0) {
+      setEditFieldErrors(errors)
+      setEditGovernanceBanner('')
+      return
+    }
+
+    if (needsEscalationRecordWarning(merged) && !draft.allowIncompleteEscalationRecord) {
+      setEditGovernanceBanner(
+        'This project is marked as needing escalation but has no escalation record. Add one?',
+      )
+      setEditFieldErrors({})
+      return
+    }
+
     const today = new Date().toISOString().slice(0, 10)
     setProjects((prev) =>
       prev.map((project) =>
@@ -390,15 +534,23 @@ function Dashboard() {
               weeklyUpdate: draft.weeklyUpdate,
               blocker: draft.blocker,
               nextAction: draft.nextAction,
-              escalationRequired: draft.escalationRequired,
+              escalationRequired: draft.governanceStatus === 'Needs Escalation',
               tags: [...(draft.tags || [])].sort((a, b) => a.localeCompare(b)),
               lastUpdated: today,
+              governanceStatus: draft.governanceStatus,
+              riskReason: draft.riskReason?.trim() ?? '',
+              targetResolutionDate: draft.targetResolutionDate || '',
+              escalationRecordRaised: draft.escalationRecordRaised === true,
+              escalationRecordRef: draft.escalationRecordRef?.trim() ?? '',
+              blockerOwner: draft.blockerOwner?.trim() ?? '',
             }
           : project,
       ),
     )
     setIsEditing(false)
     setDraft(null)
+    setEditFieldErrors({})
+    setEditGovernanceBanner('')
     setSaveMessage('Project update saved successfully.')
   }
 
@@ -448,6 +600,16 @@ function Dashboard() {
     setCreateDrawerOpen(false)
     setCreateForm(emptyCreateForm())
     setCreateFieldErrors({})
+    setRaiseEscalationOpen(false)
+    escalateResumeRef.current = null
+  }
+
+  function closeDetailPanel() {
+    setSelectedProjectId('')
+    setIsEditing(false)
+    setDraft(null)
+    setEditFieldErrors({})
+    setEditGovernanceBanner('')
   }
 
   function openCreateDrawer() {
@@ -457,6 +619,18 @@ function Dashboard() {
   }
 
   function submitCreateProject(formData) {
+    if (formData.governanceStatus === 'Needs Escalation' && formData.escalationRecordRaised === false) {
+      escalateResumeRef.current = (ref) => {
+        setCreateForm((f) => ({
+          ...f,
+          escalationRecordRaised: true,
+          escalationRecordRef: ref,
+        }))
+      }
+      setRaiseEscalationOpen(true)
+      return
+    }
+
     const errors = validateCreateForm(formData)
     setCreateFieldErrors(errors)
     if (Object.keys(errors).length > 0) return
@@ -476,9 +650,15 @@ function Dashboard() {
         weeklyUpdate: formData.weeklyUpdate.trim(),
         blocker: formData.blocker.trim(),
         nextAction: formData.nextAction.trim(),
-        escalationRequired: Boolean(formData.escalationRequired),
+        escalationRequired: formData.governanceStatus === 'Needs Escalation',
         lastUpdated: today,
         tags: sortedTags,
+        governanceStatus: formData.governanceStatus,
+        riskReason: (formData.riskReason ?? '').trim(),
+        targetResolutionDate: formData.targetResolutionDate || '',
+        escalationRecordRaised: formData.escalationRecordRaised === true,
+        escalationRecordRef: (formData.escalationRecordRef ?? '').trim(),
+        blockerOwner: (formData.blockerOwner ?? '').trim(),
       }
       return [...prev, record]
     })
@@ -515,6 +695,8 @@ function Dashboard() {
       setSelectedProjectId('')
       setIsEditing(false)
       setDraft(null)
+      setEditFieldErrors({})
+      setEditGovernanceBanner('')
     }
     cancelDeleteModal()
     setDeleteUndo({ backup })
@@ -528,12 +710,6 @@ function Dashboard() {
       if (prev.some((p) => p.id === backup.id)) return prev
       return [...prev, backup]
     })
-  }
-
-  function closeDetailPanel() {
-    setSelectedProjectId('')
-    setIsEditing(false)
-    setDraft(null)
   }
 
   const shell = 'min-h-screen bg-page px-6 py-10 md:px-10 md:py-12'
@@ -756,6 +932,7 @@ function Dashboard() {
             <div className="flex min-h-0 min-w-0 flex-col border-b border-line xl:border-b-0 xl:border-r xl:border-line">
               <AttentionStrip
                 attention={attention}
+                priorWeekCounts={PORTFOLIO_GOVERNANCE_META.attentionPriorWeekCounts}
                 activeFocus={attentionFocus}
                 onToggle={toggleAttentionFocus}
               />
@@ -796,6 +973,7 @@ function Dashboard() {
                         const selected = selectedProjectId === project.id
                         const escalationRow = project.escalationRequired && !selected
                         const stripe = rowIndex % 2 === 1 && !selected && !escalationRow
+                        const governanceWarnings = getGovernanceWarnings(project)
                         return (
                           <tr
                             key={project.id}
@@ -825,7 +1003,20 @@ function Dashboard() {
                                     : 'border-l-transparent bg-white hover:bg-surface-muted'
                             }`}
                           >
-                            <Td className="font-semibold text-ink">{project.name}</Td>
+                            <Td className="font-semibold text-ink">
+                              <span className="inline-flex max-w-full items-center gap-1.5">
+                                {governanceWarnings.length > 0 ? (
+                                  <span
+                                    className="shrink-0 cursor-default text-status-amber"
+                                    title={governanceWarnings.join(' ')}
+                                    aria-label={governanceWarnings.join(' ')}
+                                  >
+                                    ⚠
+                                  </span>
+                                ) : null}
+                                <span className="min-w-0 truncate">{project.name}</span>
+                              </span>
+                            </Td>
                             <Td className="text-ink-muted">{project.businessUnit}</Td>
                             <Td className="text-ink-muted">{project.owner}</Td>
                             <Td className="whitespace-nowrap tabular-nums text-ink-muted">
@@ -869,6 +1060,13 @@ function Dashboard() {
                     isEditing={isEditing}
                     draft={draft}
                     onDraftChange={setDraft}
+                    onClearGovernanceEditErrors={(keys) => {
+                      setEditFieldErrors((prev) => {
+                        const next = { ...prev }
+                        for (const k of keys) delete next[k]
+                        return next
+                      })
+                    }}
                     onEdit={startEdit}
                     onCancel={cancelEdit}
                     onSave={saveEdit}
@@ -876,6 +1074,28 @@ function Dashboard() {
                     onRequestDelete={openDeleteModal}
                     saveMessage={saveMessage}
                     freshness={getFreshness(selectedProject.lastUpdated)}
+                    editFieldErrors={editFieldErrors}
+                    editGovernanceBanner={editGovernanceBanner}
+                    onDismissGovernanceBanner={() => setEditGovernanceBanner('')}
+                    onAllowIncompleteEscalationRecord={() => {
+                      setDraft((d) => (d ? { ...d, allowIncompleteEscalationRecord: true } : d))
+                      setEditGovernanceBanner('')
+                    }}
+                    onOpenRaiseEscalationRecord={() => {
+                      escalateResumeRef.current = (ref) => {
+                        setDraft((d) =>
+                          d
+                            ? {
+                                ...d,
+                                escalationRecordRaised: true,
+                                escalationRecordRef: ref,
+                              }
+                            : d,
+                        )
+                      }
+                      setRaiseEscalationOpen(true)
+                      setEditGovernanceBanner('')
+                    }}
                   />
                 </div>
               )}
@@ -904,6 +1124,21 @@ function Dashboard() {
           onCancel={cancelDeleteModal}
           onConfirm={confirmDeleteProject}
           canDelete={deletePhraseInput === 'DELETE'}
+        />
+      ) : null}
+
+      {raiseEscalationOpen ? (
+        <RaiseEscalationModal
+          onClose={() => {
+            setRaiseEscalationOpen(false)
+            escalateResumeRef.current = null
+          }}
+          onSubmit={(ref) => {
+            const fn = escalateResumeRef.current
+            escalateResumeRef.current = null
+            setRaiseEscalationOpen(false)
+            fn?.(ref)
+          }}
         />
       ) : null}
     </>
@@ -942,6 +1177,72 @@ function TagPicker({ selected, onChange }) {
             </button>
           )
         })}
+      </div>
+    </div>
+  )
+}
+
+function RaiseEscalationModal({ onClose, onSubmit }) {
+  const [refValue, setRefValue] = useState('')
+
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  function handleSubmit(e) {
+    e.preventDefault()
+    const r = refValue.trim()
+    if (!r) return
+    onSubmit(r)
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" role="presentation">
+      <button
+        type="button"
+        className="absolute inset-0 bg-black/35"
+        aria-label="Close escalation form"
+        onClick={onClose}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="raise-escalation-title"
+        className={`relative z-10 w-full max-w-md rounded-2xl border border-line bg-white p-6 md:p-7 ${cardShadow}`}
+      >
+        <h2 id="raise-escalation-title" className="text-[1.125rem] font-semibold leading-snug text-ink">
+          Raise escalation
+        </h2>
+        <p className="mt-2 text-sm leading-relaxed text-ink-muted">
+          Enter the escalation register reference or ticket ID. This will be stored on the project.
+        </p>
+        <form className="mt-5 space-y-4" onSubmit={handleSubmit}>
+          <InputField
+            label="Escalation record reference"
+            id="raise-esc-ref"
+            value={refValue}
+            onChange={setRefValue}
+          />
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-line bg-white px-4 py-2.5 text-sm font-semibold text-ink transition-colors hover:bg-surface-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="rounded-lg bg-bank px-4 py-2.5 text-sm font-semibold text-white shadow-[0_1px_2px_rgba(0,0,0,0.06)] transition-colors hover:bg-bank-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank"
+            >
+              Save record
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   )
@@ -1077,6 +1378,78 @@ function CreateProjectDrawer({
             error={fieldErrors.nextAction}
             rows={2}
           />
+          <label className="flex w-full flex-col gap-1.5">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">
+              Governance status
+            </span>
+            <select
+              value={form.governanceStatus || 'On Track'}
+              onChange={(e) => {
+                const v = e.target.value
+                patchForm({
+                  governanceStatus: v,
+                  escalationRequired: v === 'Needs Escalation',
+                  escalationRecordRaised: v === 'Needs Escalation' ? form.escalationRecordRaised : null,
+                })
+              }}
+              className="h-10 w-full cursor-pointer rounded-lg border border-line bg-white px-3 text-[13px] font-medium text-ink outline-none transition-colors focus-visible:border-bank focus-visible:ring-2 focus-visible:ring-[color:var(--color-focus-ring)]"
+            >
+              <option value="On Track">On Track</option>
+              <option value="At Risk">At Risk</option>
+              <option value="Needs Escalation">Needs Escalation</option>
+            </select>
+          </label>
+          {(form.governanceStatus === 'At Risk' || form.governanceStatus === 'Needs Escalation') && (
+            <>
+              <TextAreaField
+                label="Reason for risk"
+                value={form.riskReason ?? ''}
+                onChange={(v) => patchForm({ riskReason: v })}
+                error={fieldErrors.riskReason}
+                rows={3}
+              />
+              <InputField
+                label="Target resolution date"
+                id="create-target-resolution"
+                type="date"
+                value={form.targetResolutionDate ?? ''}
+                onChange={(v) => patchForm({ targetResolutionDate: v })}
+                error={fieldErrors.targetResolutionDate}
+              />
+            </>
+          )}
+          {form.governanceStatus === 'Needs Escalation' ? (
+            <div className="rounded-xl border border-line bg-surface-muted px-4 py-3">
+              <p className="text-[12px] font-semibold text-ink">Have you raised an escalation record?</p>
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => patchForm({ escalationRecordRaised: true })}
+                  className={`rounded-lg border px-3 py-1.5 text-[12px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank ${
+                    form.escalationRecordRaised === true
+                      ? 'border-bank bg-bank-tint text-bank'
+                      : 'border-line bg-white text-ink-muted hover:bg-page'
+                  }`}
+                >
+                  Yes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => patchForm({ escalationRecordRaised: false })}
+                  className={`rounded-lg border px-3 py-1.5 text-[12px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank ${
+                    form.escalationRecordRaised === false
+                      ? 'border-bank bg-bank-tint text-bank'
+                      : 'border-line bg-white text-ink-muted hover:bg-page'
+                  }`}
+                >
+                  No
+                </button>
+              </div>
+              {fieldErrors.escalationRecordRaised ? (
+                <p className="mt-2 text-[12px] font-medium text-status-red">{fieldErrors.escalationRecordRaised}</p>
+              ) : null}
+            </div>
+          ) : null}
           <TextAreaField
             label="Weekly update (optional)"
             value={form.weeklyUpdate}
@@ -1087,17 +1460,18 @@ function CreateProjectDrawer({
             label="Blocker (optional)"
             value={form.blocker}
             onChange={(v) => patchForm({ blocker: v })}
+            error={fieldErrors.blocker}
             rows={2}
           />
-          <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-line bg-surface-muted px-4 py-3 text-[13px] font-medium text-ink transition-colors hover:bg-page">
-            <input
-              type="checkbox"
-              checked={form.escalationRequired}
-              onChange={(e) => patchForm({ escalationRequired: e.target.checked })}
-              className="size-4 rounded border-line text-bank focus:ring-2 focus:ring-[color:var(--color-focus-ring)]"
+          {(form.blocker ?? '').trim() ? (
+            <InputField
+              label="Blocker owner"
+              id="create-blocker-owner"
+              value={form.blockerOwner ?? ''}
+              onChange={(v) => patchForm({ blockerOwner: v })}
+              error={fieldErrors.blockerOwner}
             />
-            Escalation required
-          </label>
+          ) : null}
           <div className="rounded-xl border border-line bg-surface-muted px-4 py-3">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">Tags</p>
             <p className="mt-1 text-[12px] leading-snug text-ink-muted">Optional — select all that apply.</p>
@@ -1144,7 +1518,15 @@ function CreateProjectDrawer({
   )
 }
 
-function AttentionStrip({ attention, activeFocus, onToggle }) {
+function formatAttentionWeekDelta(current, prior) {
+  if (prior == null) return { text: '—', className: 'text-mid-grey' }
+  const d = current - prior
+  if (d > 0) return { text: `+${d}`, className: 'font-semibold text-bank' }
+  if (d < 0) return { text: String(d), className: 'font-semibold text-status-green' }
+  return { text: '0', className: 'font-medium text-mid-grey' }
+}
+
+function AttentionStrip({ attention, priorWeekCounts, activeFocus, onToggle }) {
   return (
     <div className="border-b border-line bg-surface-muted px-5 py-3.5 md:px-6">
       <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-mid-grey">
@@ -1154,18 +1536,21 @@ function AttentionStrip({ attention, activeFocus, onToggle }) {
         <AttentionMetric
           kind="overdue"
           count={attention.overdue}
+          priorCount={priorWeekCounts?.overdue ?? null}
           active={activeFocus === 'overdue'}
           onToggle={() => onToggle('overdue')}
         />
         <AttentionMetric
           kind="stale"
           count={attention.stale}
+          priorCount={priorWeekCounts?.stale ?? null}
           active={activeFocus === 'stale'}
           onToggle={() => onToggle('stale')}
         />
         <AttentionMetric
           kind="escalation"
           count={attention.escalations}
+          priorCount={priorWeekCounts?.escalations ?? null}
           active={activeFocus === 'escalation'}
           onToggle={() => onToggle('escalation')}
         />
@@ -1174,27 +1559,33 @@ function AttentionStrip({ attention, activeFocus, onToggle }) {
   )
 }
 
-function AttentionMetric({ kind, count, active, onToggle }) {
+function AttentionMetric({ kind, count, priorCount, active, onToggle }) {
   const label =
     kind === 'overdue' ? 'Overdue' : kind === 'stale' ? 'Stale updates' : 'Escalations'
   const warn = count > 0
+  const delta = formatAttentionWeekDelta(count, priorCount)
   const base =
     'inline-flex min-w-[8.5rem] items-center justify-between gap-4 rounded-lg border px-3 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank'
-  const tone =
-    active && warn
-      ? 'border-bank/35 bg-bank-tint'
-      : active
-        ? 'border-line bg-white'
-        : warn
-          ? 'border-status-amber/40 bg-status-amber-bg/50 hover:bg-status-amber-bg'
-          : 'border-line bg-white hover:bg-surface-muted'
+  const tone = active
+    ? 'border-2 border-bank bg-bank-tint shadow-[inset_0_0_0_1px_rgba(219,0,17,0.12)]'
+    : warn
+      ? 'border border-status-amber/40 bg-status-amber-bg/50 hover:bg-status-amber-bg'
+      : 'border border-line bg-white hover:bg-surface-muted'
   return (
-    <button type="button" onClick={onToggle} className={`${base} ${tone} ${cardShadow}`}>
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={active}
+      className={`${base} ${tone} ${cardShadow}`}
+    >
       <span className="text-[11px] font-medium text-ink-muted">{label}</span>
-      <span
-        className={`text-lg font-bold tabular-nums leading-none ${warn && kind !== 'stale' ? 'text-bank' : warn ? 'text-status-amber' : 'text-ink'}`}
-      >
-        {count}
+      <span className="flex items-baseline gap-2 tabular-nums">
+        <span
+          className={`text-lg font-bold leading-none ${warn && kind !== 'stale' ? 'text-bank' : warn ? 'text-status-amber' : 'text-ink'}`}
+        >
+          {count}
+        </span>
+        <span className={`text-[11px] leading-none ${delta.className}`}>{delta.text}</span>
       </span>
     </button>
   )
@@ -1518,6 +1909,7 @@ function DetailPanel({
   isEditing,
   draft,
   onDraftChange,
+  onClearGovernanceEditErrors,
   onEdit,
   onCancel,
   onSave,
@@ -1525,8 +1917,18 @@ function DetailPanel({
   onRequestDelete,
   saveMessage,
   freshness,
+  editFieldErrors,
+  editGovernanceBanner,
+  onDismissGovernanceBanner,
+  onAllowIncompleteEscalationRecord,
+  onOpenRaiseEscalationRecord,
 }) {
   const status = project.derivedStatus
+
+  function patchDraft(updates) {
+    onDraftChange((prev) => ({ ...prev, ...updates }))
+    onClearGovernanceEditErrors?.(Object.keys(updates))
+  }
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-white">
@@ -1568,17 +1970,45 @@ function DetailPanel({
                 <StatusBadge status={status} />
               </div>
             </div>
+            {(project.governanceStatus || '').trim() ? (
+              <Field label="Governance status (recorded)" value={project.governanceStatus} />
+            ) : null}
+            {(project.riskReason ?? '').trim() ? (
+              <Field label="Reason for risk" value={project.riskReason} />
+            ) : null}
+            {project.targetResolutionDate ? (
+              <Field label="Target resolution date" value={formatDate(project.targetResolutionDate)} />
+            ) : null}
             <Field label="Weekly Update" value={project.weeklyUpdate} />
             <Field label="Blocker" value={project.blocker || 'None'} />
+            {(project.blocker ?? '').trim() ? (
+              <Field
+                label="Blocker owner"
+                value={(project.blockerOwner ?? '').trim() || '—'}
+              />
+            ) : null}
             <Field label="Next Action" value={project.nextAction} />
             <div className="rounded-xl border border-line bg-surface-muted px-4 py-3">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">
-                Escalation Required
+                Escalation required
               </p>
               <div className="mt-2">
                 <EscalationChip required={project.escalationRequired} />
               </div>
             </div>
+            {project.escalationRecordRaised === true || project.escalationRecordRaised === false ? (
+              <div className="rounded-xl border border-line bg-surface-muted px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">
+                  Escalation record raised
+                </p>
+                <div className="mt-2">
+                  <BooleanChip active={project.escalationRecordRaised === true} />
+                </div>
+              </div>
+            ) : null}
+            {(project.escalationRecordRef ?? '').trim() ? (
+              <Field label="Escalation record reference" value={project.escalationRecordRef} />
+            ) : null}
             <div className="rounded-xl border border-line bg-surface-muted px-4 py-3">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">Tags</p>
               <div className="mt-2">
@@ -1641,49 +2071,163 @@ function DetailPanel({
               </button>
             </div>
           </div>
-        ) : (
+        ) : draft ? (
           <div className="space-y-4">
             <InputField
               label="Owner"
+              id="edit-owner"
               value={draft.owner}
-              onChange={(value) => onDraftChange((prev) => ({ ...prev, owner: value }))}
+              onChange={(value) => patchDraft({ owner: value })}
             />
             <InputField
               label="Due Date"
+              id="edit-due"
               type="date"
               value={draft.dueDate}
-              onChange={(value) => onDraftChange((prev) => ({ ...prev, dueDate: value }))}
+              onChange={(value) => patchDraft({ dueDate: value })}
             />
+            <label className="flex w-full flex-col gap-1.5">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">
+                Governance status
+              </span>
+              <select
+                value={draft.governanceStatus || 'On Track'}
+                onChange={(e) => {
+                  const v = e.target.value
+                  onDraftChange((prev) => ({
+                    ...prev,
+                    governanceStatus: v,
+                    escalationRequired: v === 'Needs Escalation',
+                    escalationRecordRaised: v === 'Needs Escalation' ? prev.escalationRecordRaised : null,
+                  }))
+                  onClearGovernanceEditErrors?.([
+                    'governanceStatus',
+                    'escalationRequired',
+                    'escalationRecordRaised',
+                    'riskReason',
+                    'targetResolutionDate',
+                  ])
+                }}
+                className="h-10 w-full cursor-pointer rounded-lg border border-line bg-white px-3 text-[13px] font-medium text-ink outline-none transition-colors focus-visible:border-bank focus-visible:ring-2 focus-visible:ring-[color:var(--color-focus-ring)]"
+              >
+                <option value="On Track">On Track</option>
+                <option value="At Risk">At Risk</option>
+                <option value="Needs Escalation">Needs Escalation</option>
+              </select>
+            </label>
+            {(draft.governanceStatus === 'At Risk' || draft.governanceStatus === 'Needs Escalation') && (
+              <>
+                <TextAreaField
+                  label="Reason for risk"
+                  value={draft.riskReason ?? ''}
+                  onChange={(value) => patchDraft({ riskReason: value })}
+                  error={editFieldErrors?.riskReason}
+                  rows={3}
+                />
+                <InputField
+                  label="Target resolution date"
+                  id="edit-target-resolution"
+                  type="date"
+                  value={draft.targetResolutionDate ?? ''}
+                  onChange={(value) => patchDraft({ targetResolutionDate: value })}
+                  error={editFieldErrors?.targetResolutionDate}
+                />
+              </>
+            )}
+            {draft.governanceStatus === 'Needs Escalation' ? (
+              <div className="rounded-xl border border-line bg-surface-muted px-4 py-3">
+                <p className="text-[12px] font-semibold text-ink">Have you raised an escalation record?</p>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => patchDraft({ escalationRecordRaised: true })}
+                    className={`rounded-lg border px-3 py-1.5 text-[12px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank ${
+                      draft.escalationRecordRaised === true
+                        ? 'border-bank bg-bank-tint text-bank'
+                        : 'border-line bg-white text-ink-muted hover:bg-page'
+                    }`}
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => patchDraft({ escalationRecordRaised: false })}
+                    className={`rounded-lg border px-3 py-1.5 text-[12px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank ${
+                      draft.escalationRecordRaised === false
+                        ? 'border-bank bg-bank-tint text-bank'
+                        : 'border-line bg-white text-ink-muted hover:bg-page'
+                    }`}
+                  >
+                    No
+                  </button>
+                </div>
+                {editFieldErrors?.escalationRecordRaised ? (
+                  <p className="mt-2 text-[12px] font-medium text-status-red">
+                    {editFieldErrors.escalationRecordRaised}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             <TextAreaField
               label="Weekly Update"
               value={draft.weeklyUpdate}
-              onChange={(value) => onDraftChange((prev) => ({ ...prev, weeklyUpdate: value }))}
+              onChange={(value) => patchDraft({ weeklyUpdate: value })}
             />
             <TextAreaField
               label="Blocker"
               value={draft.blocker}
-              onChange={(value) => onDraftChange((prev) => ({ ...prev, blocker: value }))}
+              onChange={(value) => patchDraft({ blocker: value })}
+              error={editFieldErrors?.blocker}
             />
+            {(draft.blocker ?? '').trim() ? (
+              <InputField
+                label="Blocker owner"
+                id="edit-blocker-owner"
+                value={draft.blockerOwner ?? ''}
+                onChange={(value) => patchDraft({ blockerOwner: value })}
+                error={editFieldErrors?.blockerOwner}
+              />
+            ) : null}
             <TextAreaField
               label="Next Action"
               value={draft.nextAction}
-              onChange={(value) => onDraftChange((prev) => ({ ...prev, nextAction: value }))}
+              onChange={(value) => patchDraft({ nextAction: value })}
             />
-            <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-line bg-surface-muted px-4 py-3 text-[13px] font-medium text-ink transition-colors hover:bg-page">
-              <input
-                type="checkbox"
-                checked={draft.escalationRequired}
-                onChange={(event) =>
-                  onDraftChange((prev) => ({ ...prev, escalationRequired: event.target.checked }))
-                }
-                className="size-4 rounded border-line text-bank focus:ring-2 focus:ring-[color:var(--color-focus-ring)]"
-              />
-              Escalation Required
-            </label>
             <TagPicker
               selected={draft.tags || []}
               onChange={(tags) => onDraftChange((prev) => ({ ...prev, tags }))}
             />
+            {editGovernanceBanner ? (
+              <div
+                role="alert"
+                className="rounded-lg border border-status-amber/35 bg-status-amber-bg/40 px-3 py-3 text-[13px] leading-relaxed text-ink"
+              >
+                <p className="font-medium">{editGovernanceBanner}</p>
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                  <button
+                    type="button"
+                    onClick={onOpenRaiseEscalationRecord}
+                    className="rounded-lg bg-bank px-3 py-2 text-[12px] font-semibold text-white shadow-[0_1px_2px_rgba(0,0,0,0.06)] transition-colors hover:bg-bank-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank"
+                  >
+                    Add escalation record
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onAllowIncompleteEscalationRecord}
+                    className="rounded-lg border border-line bg-white px-3 py-2 text-[12px] font-semibold text-ink transition-colors hover:bg-surface-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-muted"
+                  >
+                    Save without record
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onDismissGovernanceBanner}
+                    className="rounded-lg border border-transparent px-3 py-2 text-[12px] font-semibold text-ink-muted underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:gap-3">
               <button
                 type="button"
@@ -1701,7 +2245,7 @@ function DetailPanel({
               </button>
             </div>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   )
