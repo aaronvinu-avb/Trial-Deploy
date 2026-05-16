@@ -186,13 +186,18 @@ function parseDate(value) {
   return new Date(`${value}T00:00:00`)
 }
 
+const CAL_MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** Calendar dates as DD MMM YYYY (e.g. 07 May 2026) */
+function formatCalendarDate(d) {
+  const day = String(d.getDate()).padStart(2, '0')
+  const mon = CAL_MONTHS_SHORT[d.getMonth()]
+  return `${day} ${mon} ${d.getFullYear()}`
+}
+
 function formatDate(value) {
   if (!value) return '—'
-  return new Intl.DateTimeFormat('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  }).format(parseDate(value))
+  return formatCalendarDate(parseDate(value))
 }
 
 function getStatus(project) {
@@ -382,6 +387,21 @@ function Dashboard() {
       document.body.style.overflow = prev
     }
   }, [createDrawerOpen, pendingDelete])
+
+  useEffect(() => {
+    if (!selectedProjectId) return undefined
+    function onKeyDown(event) {
+      if (event.key !== 'Escape') return
+      if (createDrawerOpen || pendingDelete || raiseEscalationOpen) return
+      setSelectedProjectId('')
+      setIsEditing(false)
+      setDraft(null)
+      setEditFieldErrors({})
+      setEditGovernanceBanner('')
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [selectedProjectId, createDrawerOpen, pendingDelete, raiseEscalationOpen])
 
   const decoratedProjects = useMemo(
     () =>
@@ -755,11 +775,11 @@ function Dashboard() {
           <header
             className={`relative overflow-hidden rounded-xl border border-line bg-white ${cardShadow}`}
           >
-            <div className="h-0.5 bg-bank" aria-hidden />
+            <div className="h-[3px] bg-bank" aria-hidden />
             <div className="px-4 py-3 sm:px-5 sm:py-3.5 md:px-6">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <h1 className="font-['Manrope',ui-sans-serif,system-ui,sans-serif] text-lg font-semibold leading-tight tracking-tight text-ink sm:text-xl">
+                  <h1 className="text-lg font-semibold leading-tight tracking-tight text-ink sm:text-xl">
                     Project Tracker
                   </h1>
                   <Link
@@ -773,9 +793,9 @@ function Dashboard() {
                   <button
                     type="button"
                     onClick={openCreateDrawer}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-bank px-3 py-2 text-xs font-semibold text-white shadow-[0_1px_2px_rgba(0,0,0,0.06)] transition-colors hover:bg-bank-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank sm:px-3.5 sm:text-sm"
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-bank px-3.5 py-2.5 text-sm font-semibold text-white shadow-[0_1px_2px_rgba(0,0,0,0.06)] transition-colors hover:bg-bank-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank"
                   >
-                    <span className="text-sm font-normal leading-none" aria-hidden>
+                    <span className="text-base font-normal leading-none" aria-hidden>
                       +
                     </span>
                     Add Project
@@ -799,12 +819,7 @@ function Dashboard() {
                   ·
                 </span>
                 <p className="tabular-nums">
-                  As at{' '}
-                  {new Intl.DateTimeFormat('en-IN', {
-                    day: '2-digit',
-                    month: 'short',
-                    year: 'numeric',
-                  }).format(new Date())}
+                  As at {formatCalendarDate(new Date())}
                 </p>
               </div>
             </div>
@@ -876,7 +891,7 @@ function Dashboard() {
                 <button
                   type="button"
                   onClick={clearFilters}
-                  className="w-full rounded-lg border border-line bg-white px-4 py-2.5 text-sm font-semibold text-ink shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-colors hover:border-mid-grey/35 hover:bg-surface-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank"
+                  className="w-full rounded-lg border border-line bg-white px-4 py-2.5 text-sm font-semibold text-ink transition-colors hover:border-mid-grey/35 hover:bg-surface-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank"
                 >
                   Clear Filters
                 </button>
@@ -905,7 +920,7 @@ function Dashboard() {
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Search projects..."
                   autoComplete="off"
-                  className="h-11 w-full rounded-lg border border-line bg-surface-muted pl-10 pr-10 text-[13px] font-medium text-ink shadow-[inset_0_1px_2px_rgba(0,0,0,0.03)] outline-none transition-colors placeholder:text-ink-muted/65 focus:border-bank focus:bg-white focus:ring-2 focus:ring-[color:var(--color-focus-ring)]"
+                  className="h-10 w-full rounded-lg border border-line bg-surface-muted pl-10 pr-10 text-[13px] font-medium text-ink shadow-[inset_0_1px_2px_rgba(0,0,0,0.03)] outline-none transition-colors placeholder:text-ink-muted/65 focus:border-bank focus:bg-white focus:ring-2 focus:ring-[color:var(--color-focus-ring)]"
                 />
                 {searchQuery ? (
                   <button
@@ -1017,8 +1032,15 @@ function Dashboard() {
                                 <span className="min-w-0 truncate">{project.name}</span>
                               </span>
                             </Td>
-                            <Td className="text-ink-muted">{project.businessUnit}</Td>
-                            <Td className="text-ink-muted">{project.owner}</Td>
+                            <Td
+                              className="max-w-[12rem] truncate text-ink-muted"
+                              title={project.businessUnit}
+                            >
+                              {project.businessUnit}
+                            </Td>
+                            <Td className="max-w-[10rem] truncate text-ink-muted" title={project.owner}>
+                              {project.owner}
+                            </Td>
                             <Td className="whitespace-nowrap tabular-nums text-ink-muted">
                               {formatDate(project.dueDate)}
                             </Td>
@@ -1763,7 +1785,7 @@ function EmptyState({ onClearFilters }) {
         <button
           type="button"
           onClick={onClearFilters}
-          className="mt-6 w-full rounded-xl bg-bank py-2.5 text-sm font-semibold text-white transition-colors hover:bg-bank-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank"
+          className="mt-6 w-full rounded-lg bg-bank py-2.5 text-sm font-semibold text-white transition-colors hover:bg-bank-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank"
         >
           Clear all filters
         </button>
@@ -1784,7 +1806,7 @@ function NoProjectsRegisterEmptyState({ onAddProject }) {
         <button
           type="button"
           onClick={onAddProject}
-          className="mt-6 w-full rounded-xl bg-bank py-2.5 text-sm font-semibold text-white transition-colors hover:bg-bank-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank"
+          className="mt-6 w-full rounded-lg bg-bank py-2.5 text-sm font-semibold text-white transition-colors hover:bg-bank-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank"
         >
           + Add Project
         </button>
