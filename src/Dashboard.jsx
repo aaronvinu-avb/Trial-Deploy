@@ -15,6 +15,8 @@ const INITIAL_DATA = [
     lastUpdated: '2026-05-06',
     tags: [],
     blockerOwner: 'Legal — contracting',
+    hasBlocker: true,
+    blockerTargetResolutionDate: '2026-05-12',
   },
   {
     id: 'proj-002',
@@ -46,7 +48,9 @@ const INITIAL_DATA = [
     targetResolutionDate: '2026-05-20',
     escalationRecordRaised: true,
     escalationRecordRef: 'ESC-2026-0142',
-    blockerOwner: '',
+    blockerOwner: 'Division head — tech delivery',
+    hasBlocker: true,
+    blockerTargetResolutionDate: '2026-05-20',
   },
   {
     id: 'proj-004',
@@ -157,7 +161,35 @@ function emptyCreateForm() {
     escalationRecordRaised: null,
     escalationRecordRef: '',
     blockerOwner: '',
+    blockerTargetResolutionDate: '',
+    hasBlocker: null,
     allowIncompleteEscalationRecord: false,
+  }
+}
+
+function inferHasBlocker(data) {
+  if (data?.hasBlocker === true || data?.hasBlocker === false) return data.hasBlocker
+  return Boolean((data?.blocker ?? '').trim())
+}
+
+function emptyBlockerDetailFields() {
+  return {
+    blocker: '',
+    blockerOwner: '',
+    blockerTargetResolutionDate: '',
+  }
+}
+
+function normalizeBlockerForPersist(data) {
+  if (data.hasBlocker !== true) {
+    return { ...data, hasBlocker: false, ...emptyBlockerDetailFields() }
+  }
+  return {
+    ...data,
+    hasBlocker: true,
+    blocker: (data.blocker ?? '').trim(),
+    blockerOwner: (data.blockerOwner ?? '').trim(),
+    blockerTargetResolutionDate: data.blockerTargetResolutionDate || '',
   }
 }
 
@@ -168,9 +200,12 @@ function validateCreateForm(form) {
   if (!(f.businessUnit || '').trim()) errors.businessUnit = 'Please enter or select a business unit.'
   if (!(f.owner || '').trim()) errors.owner = 'Please enter an owner.'
   if (!f.dueDate) errors.dueDate = 'Please choose a due date.'
-  if (!(f.nextAction || '').trim()) errors.nextAction = 'Please describe the next action.'
+  if (f.hasBlocker !== true && !(f.nextAction || '').trim()) {
+    errors.nextAction = 'Please describe the next action.'
+  }
   const gov = validateGovernanceForm(f)
-  return { ...errors, ...gov }
+  const blocker = validateBlockerForm(f)
+  return { ...errors, ...gov, ...blocker }
 }
 
 function generateProjectId(projects) {
@@ -216,7 +251,7 @@ function getStatus(project) {
   }
 
   const dueWithinSevenDays = daysUntilDue >= 0 && daysUntilDue <= 7
-  if ((project.blocker ?? '').trim() || dueWithinSevenDays) {
+  if (inferHasBlocker(project) || dueWithinSevenDays) {
     return { key: 'amber', label: 'At Risk' }
   }
 
@@ -228,11 +263,14 @@ function getGovernanceWarnings(project) {
   const warnings = []
   const gs = project.governanceStatus
   const label = getStatus(project).label
-  const blocker = (project.blocker ?? '').trim()
-
-  if (blocker) {
-    if (blocker.length < 10) warnings.push('Blocker description must be at least 10 characters.')
+  if (inferHasBlocker(project)) {
+    const desc = (project.blocker ?? '').trim()
+    if (!desc) warnings.push('Blocker description is required when a blocker is recorded.')
     if (!(project.blockerOwner ?? '').trim()) warnings.push('Blocker owner is required when a blocker is recorded.')
+    if (!(project.nextAction ?? '').trim()) warnings.push('Next action is required when a blocker is recorded.')
+    if (!project.blockerTargetResolutionDate) {
+      warnings.push('Target resolution date is required when a blocker is recorded.')
+    }
   }
 
   const needsRiskFields = gs === 'At Risk' || gs === 'Needs Escalation'
@@ -250,10 +288,25 @@ function getGovernanceWarnings(project) {
   return warnings
 }
 
+function validateBlockerForm(f) {
+  const errors = {}
+  if (f.hasBlocker !== true && f.hasBlocker !== false) {
+    errors.hasBlocker = 'Please confirm whether there is a blocker.'
+  }
+  if (f.hasBlocker !== true) return errors
+
+  if (!(f.blocker ?? '').trim()) errors.blocker = 'Blocker description is required.'
+  if (!(f.blockerOwner ?? '').trim()) errors.blockerOwner = 'Blocker owner is required.'
+  if (!(f.nextAction ?? '').trim()) errors.nextAction = 'Next action is required.'
+  if (!f.blockerTargetResolutionDate) {
+    errors.blockerTargetResolutionDate = 'Target resolution date is required.'
+  }
+  return errors
+}
+
 function validateGovernanceForm(f) {
   const errors = {}
   const gs = f.governanceStatus || 'On Track'
-  const blocker = (f.blocker ?? '').trim()
 
   if (gs === 'At Risk' || gs === 'Needs Escalation') {
     const rr = (f.riskReason ?? '').trim()
@@ -265,11 +318,6 @@ function validateGovernanceForm(f) {
     if (f.escalationRecordRaised !== true && f.escalationRecordRaised !== false) {
       errors.escalationRecordRaised = 'Please confirm whether an escalation record has been raised.'
     }
-  }
-
-  if (blocker) {
-    if (blocker.length < 10) errors.blocker = 'Blocker description must be at least 10 characters.'
-    if (!(f.blockerOwner ?? '').trim()) errors.blockerOwner = 'Blocker owner is required when a blocker is present.'
   }
 
   return errors
@@ -483,6 +531,7 @@ function Dashboard() {
     if (!selectedProject) return
     setEditFieldErrors({})
     setEditGovernanceBanner('')
+    const hasBlocker = inferHasBlocker(selectedProject)
     setDraft({
       owner: selectedProject.owner,
       dueDate: selectedProject.dueDate,
@@ -500,6 +549,8 @@ function Dashboard() {
           : null,
       escalationRecordRef: selectedProject.escalationRecordRef ?? '',
       blockerOwner: selectedProject.blockerOwner ?? '',
+      blockerTargetResolutionDate: selectedProject.blockerTargetResolutionDate ?? '',
+      hasBlocker,
       allowIncompleteEscalationRecord: false,
     })
     setIsEditing(true)
@@ -527,8 +578,8 @@ function Dashboard() {
       return
     }
 
-    const merged = { ...selectedProject, ...draft }
-    const errors = validateGovernanceForm(merged)
+    const merged = normalizeBlockerForPersist({ ...selectedProject, ...draft })
+    const errors = { ...validateGovernanceForm(merged), ...validateBlockerForm(merged) }
     if (Object.keys(errors).length > 0) {
       setEditFieldErrors(errors)
       setEditGovernanceBanner('')
@@ -543,26 +594,29 @@ function Dashboard() {
       return
     }
 
+    const persisted = normalizeBlockerForPersist(draft)
     const today = new Date().toISOString().slice(0, 10)
     setProjects((prev) =>
       prev.map((project) =>
         project.id === selectedProject.id
           ? {
               ...project,
-              owner: draft.owner,
-              dueDate: draft.dueDate,
-              weeklyUpdate: draft.weeklyUpdate,
-              blocker: draft.blocker,
-              nextAction: draft.nextAction,
-              escalationRequired: draft.governanceStatus === 'Needs Escalation',
-              tags: [...(draft.tags || [])].sort((a, b) => a.localeCompare(b)),
+              owner: persisted.owner,
+              dueDate: persisted.dueDate,
+              weeklyUpdate: persisted.weeklyUpdate,
+              blocker: persisted.blocker,
+              nextAction: persisted.nextAction,
+              escalationRequired: persisted.governanceStatus === 'Needs Escalation',
+              tags: [...(persisted.tags || [])].sort((a, b) => a.localeCompare(b)),
               lastUpdated: today,
-              governanceStatus: draft.governanceStatus,
-              riskReason: draft.riskReason?.trim() ?? '',
-              targetResolutionDate: draft.targetResolutionDate || '',
-              escalationRecordRaised: draft.escalationRecordRaised === true,
-              escalationRecordRef: draft.escalationRecordRef?.trim() ?? '',
-              blockerOwner: draft.blockerOwner?.trim() ?? '',
+              governanceStatus: persisted.governanceStatus,
+              riskReason: persisted.riskReason?.trim() ?? '',
+              targetResolutionDate: persisted.targetResolutionDate || '',
+              escalationRecordRaised: persisted.escalationRecordRaised === true,
+              escalationRecordRef: persisted.escalationRecordRef?.trim() ?? '',
+              blockerOwner: persisted.blockerOwner,
+              blockerTargetResolutionDate: persisted.blockerTargetResolutionDate,
+              hasBlocker: persisted.hasBlocker,
             }
           : project,
       ),
@@ -651,7 +705,8 @@ function Dashboard() {
       return
     }
 
-    const errors = validateCreateForm(formData)
+    const normalized = normalizeBlockerForPersist(formData)
+    const errors = validateCreateForm(normalized)
     setCreateFieldErrors(errors)
     if (Object.keys(errors).length > 0) return
 
@@ -660,25 +715,27 @@ function Dashboard() {
 
     setProjects((prev) => {
       newId = generateProjectId(prev)
-      const sortedTags = [...(formData.tags || [])].sort((a, b) => a.localeCompare(b))
+      const sortedTags = [...(normalized.tags || [])].sort((a, b) => a.localeCompare(b))
       const record = {
         id: newId,
-        name: formData.name.trim(),
-        businessUnit: formData.businessUnit.trim(),
-        owner: formData.owner.trim(),
-        dueDate: formData.dueDate,
-        weeklyUpdate: formData.weeklyUpdate.trim(),
-        blocker: formData.blocker.trim(),
-        nextAction: formData.nextAction.trim(),
-        escalationRequired: formData.governanceStatus === 'Needs Escalation',
+        name: normalized.name.trim(),
+        businessUnit: normalized.businessUnit.trim(),
+        owner: normalized.owner.trim(),
+        dueDate: normalized.dueDate,
+        weeklyUpdate: normalized.weeklyUpdate.trim(),
+        blocker: normalized.blocker,
+        nextAction: normalized.nextAction.trim(),
+        escalationRequired: normalized.governanceStatus === 'Needs Escalation',
         lastUpdated: today,
         tags: sortedTags,
-        governanceStatus: formData.governanceStatus,
-        riskReason: (formData.riskReason ?? '').trim(),
-        targetResolutionDate: formData.targetResolutionDate || '',
-        escalationRecordRaised: formData.escalationRecordRaised === true,
-        escalationRecordRef: (formData.escalationRecordRef ?? '').trim(),
-        blockerOwner: (formData.blockerOwner ?? '').trim(),
+        governanceStatus: normalized.governanceStatus,
+        riskReason: (normalized.riskReason ?? '').trim(),
+        targetResolutionDate: normalized.targetResolutionDate || '',
+        escalationRecordRaised: normalized.escalationRecordRaised === true,
+        escalationRecordRef: (normalized.escalationRecordRef ?? '').trim(),
+        blockerOwner: normalized.blockerOwner,
+        blockerTargetResolutionDate: normalized.blockerTargetResolutionDate,
+        hasBlocker: normalized.hasBlocker,
       }
       return [...prev, record]
     })
@@ -1051,7 +1108,7 @@ function Dashboard() {
                               <FreshnessLabel lastUpdated={project.lastUpdated} />
                             </Td>
                             <Td>
-                              <BooleanChip active={Boolean(project.blocker)} />
+                              <BooleanChip active={inferHasBlocker(project)} />
                             </Td>
                             <Td>
                               <EscalationChip required={project.escalationRequired} />
@@ -1164,6 +1221,86 @@ function Dashboard() {
         />
       ) : null}
     </>
+  )
+}
+
+function BlockerFieldsSection({ values, onPatch, fieldErrors, idPrefix = 'blocker' }) {
+  const yesNoBtn =
+    'rounded-lg border px-3 py-1.5 text-[12px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank'
+  const yesActive = 'border-bank bg-bank-tint text-bank'
+  const yesInactive = 'border-line bg-white text-ink-muted hover:bg-page'
+
+  function setHasBlocker(next) {
+    if (next === false) {
+      onPatch({ hasBlocker: false, ...emptyBlockerDetailFields() })
+      return
+    }
+    onPatch({ hasBlocker: true })
+  }
+
+  return (
+    <div className="space-y-4 rounded-xl border border-line bg-surface-muted/50 px-4 py-4">
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">Blocker</p>
+        <p className="mt-2 text-[12px] font-semibold text-ink">Is there a blocker?</p>
+        <div className="mt-2 flex gap-2">
+          <button
+            type="button"
+            onClick={() => setHasBlocker(true)}
+            className={`${yesNoBtn} ${values.hasBlocker === true ? yesActive : yesInactive}`}
+          >
+            Yes
+          </button>
+          <button
+            type="button"
+            onClick={() => setHasBlocker(false)}
+            className={`${yesNoBtn} ${values.hasBlocker === false ? yesActive : yesInactive}`}
+          >
+            No
+          </button>
+        </div>
+        {fieldErrors?.hasBlocker ? (
+          <p className="mt-2 text-[12px] font-medium text-status-red">{fieldErrors.hasBlocker}</p>
+        ) : null}
+      </div>
+      {values.hasBlocker === true ? (
+        <div className="space-y-4 border-t border-line pt-4">
+          <TextAreaField
+            label="Blocker description"
+            value={values.blocker ?? ''}
+            onChange={(v) => onPatch({ blocker: v })}
+            error={fieldErrors?.blocker}
+            rows={3}
+            placeholder="Awaiting legal documentation clearance before merchant onboarding can proceed."
+          />
+          <InputField
+            label="Blocker owner"
+            id={`${idPrefix}-blocker-owner`}
+            value={values.blockerOwner ?? ''}
+            onChange={(v) => onPatch({ blockerOwner: v })}
+            error={fieldErrors?.blockerOwner}
+            helpText="Person responsible for clearing this blocker"
+            helperSentence="This may be different from the project owner."
+          />
+          <TextAreaField
+            label="Next action"
+            value={values.nextAction ?? ''}
+            onChange={(v) => onPatch({ nextAction: v })}
+            error={fieldErrors?.nextAction}
+            rows={2}
+            placeholder="Recheck pending legal documents and confirm missing items with compliance team."
+          />
+          <InputField
+            label="Target resolution date"
+            id={`${idPrefix}-blocker-target-resolution`}
+            type="date"
+            value={values.blockerTargetResolutionDate ?? ''}
+            onChange={(v) => onPatch({ blockerTargetResolutionDate: v })}
+            error={fieldErrors?.blockerTargetResolutionDate}
+          />
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -1393,13 +1530,21 @@ function CreateProjectDrawer({
             onChange={(v) => patchForm({ dueDate: v })}
             error={fieldErrors.dueDate}
           />
-          <TextAreaField
-            label="Next action"
-            value={form.nextAction}
-            onChange={(v) => patchForm({ nextAction: v })}
-            error={fieldErrors.nextAction}
-            rows={2}
+          <BlockerFieldsSection
+            values={form}
+            onPatch={patchForm}
+            fieldErrors={fieldErrors}
+            idPrefix="create"
           />
+          {form.hasBlocker !== true ? (
+            <TextAreaField
+              label="Next action"
+              value={form.nextAction}
+              onChange={(v) => patchForm({ nextAction: v })}
+              error={fieldErrors.nextAction}
+              rows={2}
+            />
+          ) : null}
           <label className="flex w-full flex-col gap-1.5">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">
               Governance status
@@ -1478,22 +1623,6 @@ function CreateProjectDrawer({
             onChange={(v) => patchForm({ weeklyUpdate: v })}
             rows={3}
           />
-          <TextAreaField
-            label="Blocker (optional)"
-            value={form.blocker}
-            onChange={(v) => patchForm({ blocker: v })}
-            error={fieldErrors.blocker}
-            rows={2}
-          />
-          {(form.blocker ?? '').trim() ? (
-            <InputField
-              label="Blocker owner"
-              id="create-blocker-owner"
-              value={form.blockerOwner ?? ''}
-              onChange={(v) => patchForm({ blockerOwner: v })}
-              error={fieldErrors.blockerOwner}
-            />
-          ) : null}
           <div className="rounded-xl border border-line bg-surface-muted px-4 py-3">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-muted">Tags</p>
             <p className="mt-1 text-[12px] leading-snug text-ink-muted">Optional — select all that apply.</p>
@@ -2002,14 +2131,35 @@ function DetailPanel({
               <Field label="Target resolution date" value={formatDate(project.targetResolutionDate)} />
             ) : null}
             <Field label="Weekly Update" value={project.weeklyUpdate} />
-            <Field label="Blocker" value={project.blocker || 'None'} />
-            {(project.blocker ?? '').trim() ? (
-              <Field
-                label="Blocker owner"
-                value={(project.blockerOwner ?? '').trim() || '—'}
-              />
-            ) : null}
-            <Field label="Next Action" value={project.nextAction} />
+            <div className="rounded-xl border border-line bg-surface-muted px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">Blocker</p>
+              <p className="mt-2 text-[11px] font-semibold uppercase tracking-wide text-mid-grey">
+                Is there a blocker?
+              </p>
+              <div className="mt-2">
+                <BooleanChip active={inferHasBlocker(project)} />
+              </div>
+            </div>
+            {inferHasBlocker(project) ? (
+              <>
+                <Field label="Blocker description" value={project.blocker} />
+                <Field
+                  label="Blocker owner"
+                  value={(project.blockerOwner ?? '').trim() || '—'}
+                />
+                <Field label="Next action" value={project.nextAction} />
+                <Field
+                  label="Target resolution date"
+                  value={
+                    project.blockerTargetResolutionDate
+                      ? formatDate(project.blockerTargetResolutionDate)
+                      : '—'
+                  }
+                />
+              </>
+            ) : (
+              <Field label="Next Action" value={project.nextAction} />
+            )}
             <div className="rounded-xl border border-line bg-surface-muted px-4 py-3">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">
                 Escalation required
@@ -2195,26 +2345,20 @@ function DetailPanel({
               value={draft.weeklyUpdate}
               onChange={(value) => patchDraft({ weeklyUpdate: value })}
             />
-            <TextAreaField
-              label="Blocker"
-              value={draft.blocker}
-              onChange={(value) => patchDraft({ blocker: value })}
-              error={editFieldErrors?.blocker}
+            <BlockerFieldsSection
+              values={draft}
+              onPatch={patchDraft}
+              fieldErrors={editFieldErrors}
+              idPrefix="edit"
             />
-            {(draft.blocker ?? '').trim() ? (
-              <InputField
-                label="Blocker owner"
-                id="edit-blocker-owner"
-                value={draft.blockerOwner ?? ''}
-                onChange={(value) => patchDraft({ blockerOwner: value })}
-                error={editFieldErrors?.blockerOwner}
+            {draft.hasBlocker !== true ? (
+              <TextAreaField
+                label="Next Action"
+                value={draft.nextAction}
+                onChange={(value) => patchDraft({ nextAction: value })}
+                error={editFieldErrors?.nextAction}
               />
             ) : null}
-            <TextAreaField
-              label="Next Action"
-              value={draft.nextAction}
-              onChange={(value) => patchDraft({ nextAction: value })}
-            />
             <TagPicker
               selected={draft.tags || []}
               onChange={(tags) => onDraftChange((prev) => ({ ...prev, tags }))}
@@ -2282,34 +2426,51 @@ function Field({ label, value }) {
   )
 }
 
-function InputField({ label, value, onChange, type = 'text', error, list, id }) {
+function InputField({
+  label,
+  value,
+  onChange,
+  type = 'text',
+  error,
+  list,
+  id,
+  placeholder,
+  helpText,
+  helperSentence,
+}) {
   const autoId = useId()
   const inputId = id ?? autoId
   return (
     <label className="flex w-full flex-col gap-1.5" htmlFor={inputId}>
       <span className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">{label}</span>
+      {helpText ? <p className="text-[12px] leading-snug text-ink-muted">{helpText}</p> : null}
       <input
         id={inputId}
         list={list}
         type={type}
         value={value}
+        placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
         className={`h-10 rounded-lg border bg-white px-3 text-[13px] font-medium text-ink outline-none transition-colors placeholder:text-ink-muted/70 focus-visible:border-bank focus-visible:ring-2 focus-visible:ring-[color:var(--color-focus-ring)] ${
           error ? 'border-status-red focus-visible:border-status-red' : 'border-line'
         }`}
       />
+      {helperSentence ? (
+        <p className="text-[12px] leading-snug text-ink-muted">{helperSentence}</p>
+      ) : null}
       {error ? <p className="text-[12px] font-medium text-status-red">{error}</p> : null}
     </label>
   )
 }
 
-function TextAreaField({ label, value, onChange, error, rows = 3 }) {
+function TextAreaField({ label, value, onChange, error, rows = 3, placeholder }) {
   return (
     <label className="flex flex-col gap-1.5">
       <span className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">{label}</span>
       <textarea
         value={value}
         rows={rows}
+        placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
         className={`resize-y rounded-lg border bg-white px-3 py-2.5 text-[13px] font-medium leading-relaxed text-ink outline-none transition-colors placeholder:text-ink-muted/70 focus-visible:border-bank focus-visible:ring-2 focus-visible:ring-[color:var(--color-focus-ring)] ${
           error ? 'border-status-red focus-visible:border-status-red' : 'border-line'
