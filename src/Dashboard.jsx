@@ -180,6 +180,27 @@ function emptyBlockerDetailFields() {
   }
 }
 
+function isGovernanceLockedByBlocker(data) {
+  return data?.hasBlocker === true
+}
+
+function governancePatchForBlockerYes() {
+  return {
+    governanceStatus: 'Needs Escalation',
+    escalationRequired: true,
+  }
+}
+
+function governancePatchForBlockerNo() {
+  return {
+    governanceStatus: 'On Track',
+    escalationRequired: false,
+    escalationRecordRaised: null,
+    riskReason: '',
+    targetResolutionDate: '',
+  }
+}
+
 function normalizeBlockerForPersist(data) {
   if (data.hasBlocker !== true) {
     return { ...data, hasBlocker: false, ...emptyBlockerDetailFields() }
@@ -190,6 +211,7 @@ function normalizeBlockerForPersist(data) {
     blocker: (data.blocker ?? '').trim(),
     blockerOwner: (data.blockerOwner ?? '').trim(),
     blockerTargetResolutionDate: data.blockerTargetResolutionDate || '',
+    ...governancePatchForBlockerYes(),
   }
 }
 
@@ -538,9 +560,11 @@ function Dashboard() {
       weeklyUpdate: selectedProject.weeklyUpdate,
       blocker: selectedProject.blocker,
       nextAction: selectedProject.nextAction,
-      escalationRequired: selectedProject.escalationRequired,
+      escalationRequired: hasBlocker ? true : selectedProject.escalationRequired,
       tags: [...(selectedProject.tags || [])],
-      governanceStatus: inferredGovernanceStatus(selectedProject),
+      governanceStatus: hasBlocker
+        ? 'Needs Escalation'
+        : inferredGovernanceStatus(selectedProject),
       riskReason: selectedProject.riskReason ?? '',
       targetResolutionDate: selectedProject.targetResolutionDate ?? '',
       escalationRecordRaised:
@@ -1224,6 +1248,52 @@ function Dashboard() {
   )
 }
 
+function GovernanceStatusSelect({ values, onPatch, onClearErrors }) {
+  const locked = isGovernanceLockedByBlocker(values)
+  const statusValue = locked ? 'Needs Escalation' : values.governanceStatus || 'On Track'
+
+  return (
+    <label className="flex w-full flex-col gap-1.5">
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">
+        Governance status
+      </span>
+      <select
+        disabled={locked}
+        value={statusValue}
+        onChange={(e) => {
+          const v = e.target.value
+          onPatch({
+            governanceStatus: v,
+            escalationRequired: v === 'Needs Escalation',
+            escalationRecordRaised: v === 'Needs Escalation' ? values.escalationRecordRaised : null,
+          })
+          onClearErrors?.([
+            'governanceStatus',
+            'escalationRequired',
+            'escalationRecordRaised',
+            'riskReason',
+            'targetResolutionDate',
+          ])
+        }}
+        className={`h-10 w-full rounded-lg border px-3 text-[13px] font-medium outline-none transition-colors ${
+          locked
+            ? 'cursor-not-allowed border-line bg-surface-muted text-ink-muted'
+            : 'cursor-pointer border-line bg-white text-ink focus-visible:border-bank focus-visible:ring-2 focus-visible:ring-[color:var(--color-focus-ring)]'
+        }`}
+      >
+        <option value="On Track">On Track</option>
+        <option value="At Risk">At Risk</option>
+        <option value="Needs Escalation">Needs Escalation</option>
+      </select>
+      {locked ? (
+        <p className="text-[12px] leading-snug text-ink-muted">
+          Status is automatically set to Needs Escalation when a blocker is active.
+        </p>
+      ) : null}
+    </label>
+  )
+}
+
 function BlockerFieldsSection({ values, onPatch, fieldErrors, idPrefix = 'blocker' }) {
   const yesNoBtn =
     'rounded-lg border px-3 py-1.5 text-[12px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bank'
@@ -1232,10 +1302,14 @@ function BlockerFieldsSection({ values, onPatch, fieldErrors, idPrefix = 'blocke
 
   function setHasBlocker(next) {
     if (next === false) {
-      onPatch({ hasBlocker: false, ...emptyBlockerDetailFields() })
+      onPatch({
+        hasBlocker: false,
+        ...emptyBlockerDetailFields(),
+        ...governancePatchForBlockerNo(),
+      })
       return
     }
-    onPatch({ hasBlocker: true })
+    onPatch({ hasBlocker: true, ...governancePatchForBlockerYes() })
   }
 
   return (
@@ -1545,27 +1619,7 @@ function CreateProjectDrawer({
               rows={2}
             />
           ) : null}
-          <label className="flex w-full flex-col gap-1.5">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">
-              Governance status
-            </span>
-            <select
-              value={form.governanceStatus || 'On Track'}
-              onChange={(e) => {
-                const v = e.target.value
-                patchForm({
-                  governanceStatus: v,
-                  escalationRequired: v === 'Needs Escalation',
-                  escalationRecordRaised: v === 'Needs Escalation' ? form.escalationRecordRaised : null,
-                })
-              }}
-              className="h-10 w-full cursor-pointer rounded-lg border border-line bg-white px-3 text-[13px] font-medium text-ink outline-none transition-colors focus-visible:border-bank focus-visible:ring-2 focus-visible:ring-[color:var(--color-focus-ring)]"
-            >
-              <option value="On Track">On Track</option>
-              <option value="At Risk">At Risk</option>
-              <option value="Needs Escalation">Needs Escalation</option>
-            </select>
-          </label>
+          <GovernanceStatusSelect values={form} onPatch={patchForm} />
           {(form.governanceStatus === 'At Risk' || form.governanceStatus === 'Needs Escalation') && (
             <>
               <TextAreaField
@@ -2258,35 +2312,11 @@ function DetailPanel({
               value={draft.dueDate}
               onChange={(value) => patchDraft({ dueDate: value })}
             />
-            <label className="flex w-full flex-col gap-1.5">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-mid-grey">
-                Governance status
-              </span>
-              <select
-                value={draft.governanceStatus || 'On Track'}
-                onChange={(e) => {
-                  const v = e.target.value
-                  onDraftChange((prev) => ({
-                    ...prev,
-                    governanceStatus: v,
-                    escalationRequired: v === 'Needs Escalation',
-                    escalationRecordRaised: v === 'Needs Escalation' ? prev.escalationRecordRaised : null,
-                  }))
-                  onClearGovernanceEditErrors?.([
-                    'governanceStatus',
-                    'escalationRequired',
-                    'escalationRecordRaised',
-                    'riskReason',
-                    'targetResolutionDate',
-                  ])
-                }}
-                className="h-10 w-full cursor-pointer rounded-lg border border-line bg-white px-3 text-[13px] font-medium text-ink outline-none transition-colors focus-visible:border-bank focus-visible:ring-2 focus-visible:ring-[color:var(--color-focus-ring)]"
-              >
-                <option value="On Track">On Track</option>
-                <option value="At Risk">At Risk</option>
-                <option value="Needs Escalation">Needs Escalation</option>
-              </select>
-            </label>
+            <GovernanceStatusSelect
+              values={draft}
+              onPatch={(updates) => patchDraft(updates)}
+              onClearErrors={onClearGovernanceEditErrors}
+            />
             {(draft.governanceStatus === 'At Risk' || draft.governanceStatus === 'Needs Escalation') && (
               <>
                 <TextAreaField
