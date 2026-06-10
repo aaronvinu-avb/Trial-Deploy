@@ -16,7 +16,7 @@ const INITIAL_DATA = [
     tags: [],
     blockerOwner: 'Legal — contracting',
     hasBlocker: true,
-    blockerTargetResolutionDate: '2026-05-12',
+    targetResolutionDate: '2026-05-12',
   },
   {
     id: 'proj-002',
@@ -50,7 +50,6 @@ const INITIAL_DATA = [
     escalationRecordRef: 'ESC-2026-0142',
     blockerOwner: 'Division head — tech delivery',
     hasBlocker: true,
-    blockerTargetResolutionDate: '2026-05-20',
   },
   {
     id: 'proj-004',
@@ -161,7 +160,6 @@ function emptyCreateForm() {
     escalationRecordRaised: null,
     escalationRecordRef: '',
     blockerOwner: '',
-    blockerTargetResolutionDate: '',
     hasBlocker: null,
     allowIncompleteEscalationRecord: false,
   }
@@ -176,8 +174,23 @@ function emptyBlockerDetailFields() {
   return {
     blocker: '',
     blockerOwner: '',
-    blockerTargetResolutionDate: '',
   }
+}
+
+function shouldShowTargetResolutionDate(values) {
+  const gs = values.governanceStatus || 'On Track'
+  if (values.hasBlocker === true) return true
+  return gs === 'At Risk' || gs === 'Needs Escalation'
+}
+
+function showTargetResolutionAfterBlocker(values) {
+  return values.hasBlocker === true && shouldShowTargetResolutionDate(values)
+}
+
+function showTargetResolutionAfterRiskReason(values) {
+  if (values.hasBlocker === true) return false
+  const gs = values.governanceStatus || 'On Track'
+  return gs === 'At Risk' || gs === 'Needs Escalation'
 }
 
 function isGovernanceLockedByBlocker(data) {
@@ -210,7 +223,6 @@ function normalizeBlockerForPersist(data) {
     hasBlocker: true,
     blocker: (data.blocker ?? '').trim(),
     blockerOwner: (data.blockerOwner ?? '').trim(),
-    blockerTargetResolutionDate: data.blockerTargetResolutionDate || '',
     ...governancePatchForBlockerYes(),
   }
 }
@@ -290,7 +302,7 @@ function getGovernanceWarnings(project) {
     if (!desc) warnings.push('Blocker description is required when a blocker is recorded.')
     if (!(project.blockerOwner ?? '').trim()) warnings.push('Blocker owner is required when a blocker is recorded.')
     if (!(project.nextAction ?? '').trim()) warnings.push('Next action is required when a blocker is recorded.')
-    if (!project.blockerTargetResolutionDate) {
+    if (!project.targetResolutionDate) {
       warnings.push('Target resolution date is required when a blocker is recorded.')
     }
   }
@@ -320,8 +332,8 @@ function validateBlockerForm(f) {
   if (!(f.blocker ?? '').trim()) errors.blocker = 'Blocker description is required.'
   if (!(f.blockerOwner ?? '').trim()) errors.blockerOwner = 'Blocker owner is required.'
   if (!(f.nextAction ?? '').trim()) errors.nextAction = 'Next action is required.'
-  if (!f.blockerTargetResolutionDate) {
-    errors.blockerTargetResolutionDate = 'Target resolution date is required.'
+  if (!f.targetResolutionDate) {
+    errors.targetResolutionDate = 'Target resolution date is required.'
   }
   return errors
 }
@@ -573,7 +585,6 @@ function Dashboard() {
           : null,
       escalationRecordRef: selectedProject.escalationRecordRef ?? '',
       blockerOwner: selectedProject.blockerOwner ?? '',
-      blockerTargetResolutionDate: selectedProject.blockerTargetResolutionDate ?? '',
       hasBlocker,
       allowIncompleteEscalationRecord: false,
     })
@@ -639,7 +650,6 @@ function Dashboard() {
               escalationRecordRaised: persisted.escalationRecordRaised === true,
               escalationRecordRef: persisted.escalationRecordRef?.trim() ?? '',
               blockerOwner: persisted.blockerOwner,
-              blockerTargetResolutionDate: persisted.blockerTargetResolutionDate,
               hasBlocker: persisted.hasBlocker,
             }
           : project,
@@ -758,7 +768,6 @@ function Dashboard() {
         escalationRecordRaised: normalized.escalationRecordRaised === true,
         escalationRecordRef: (normalized.escalationRecordRef ?? '').trim(),
         blockerOwner: normalized.blockerOwner,
-        blockerTargetResolutionDate: normalized.blockerTargetResolutionDate,
         hasBlocker: normalized.hasBlocker,
       }
       return [...prev, record]
@@ -1248,6 +1257,19 @@ function Dashboard() {
   )
 }
 
+function TargetResolutionDateField({ values, onPatch, fieldErrors, idPrefix }) {
+  return (
+    <InputField
+      label="Target Resolution Date"
+      id={`${idPrefix}-target-resolution`}
+      type="date"
+      value={values.targetResolutionDate ?? ''}
+      onChange={(v) => onPatch({ targetResolutionDate: v })}
+      error={fieldErrors?.targetResolutionDate}
+    />
+  )
+}
+
 function GovernanceStatusSelect({ values, onPatch, onClearErrors }) {
   const locked = isGovernanceLockedByBlocker(values)
   const statusValue = locked ? 'Needs Escalation' : values.governanceStatus || 'On Track'
@@ -1363,14 +1385,6 @@ function BlockerFieldsSection({ values, onPatch, fieldErrors, idPrefix = 'blocke
             error={fieldErrors?.nextAction}
             rows={2}
             placeholder="Recheck pending legal documents and confirm missing items with compliance team."
-          />
-          <InputField
-            label="Target resolution date"
-            id={`${idPrefix}-blocker-target-resolution`}
-            type="date"
-            value={values.blockerTargetResolutionDate ?? ''}
-            onChange={(v) => onPatch({ blockerTargetResolutionDate: v })}
-            error={fieldErrors?.blockerTargetResolutionDate}
           />
         </div>
       ) : null}
@@ -1610,6 +1624,14 @@ function CreateProjectDrawer({
             fieldErrors={fieldErrors}
             idPrefix="create"
           />
+          {showTargetResolutionAfterBlocker(form) ? (
+            <TargetResolutionDateField
+              values={form}
+              onPatch={patchForm}
+              fieldErrors={fieldErrors}
+              idPrefix="create"
+            />
+          ) : null}
           {form.hasBlocker !== true ? (
             <TextAreaField
               label="Next action"
@@ -1629,14 +1651,14 @@ function CreateProjectDrawer({
                 error={fieldErrors.riskReason}
                 rows={3}
               />
-              <InputField
-                label="Target resolution date"
-                id="create-target-resolution"
-                type="date"
-                value={form.targetResolutionDate ?? ''}
-                onChange={(v) => patchForm({ targetResolutionDate: v })}
-                error={fieldErrors.targetResolutionDate}
-              />
+              {showTargetResolutionAfterRiskReason(form) ? (
+                <TargetResolutionDateField
+                  values={form}
+                  onPatch={patchForm}
+                  fieldErrors={fieldErrors}
+                  idPrefix="create"
+                />
+              ) : null}
             </>
           )}
           {form.governanceStatus === 'Needs Escalation' ? (
@@ -2181,8 +2203,8 @@ function DetailPanel({
             {(project.riskReason ?? '').trim() ? (
               <Field label="Reason for risk" value={project.riskReason} />
             ) : null}
-            {project.targetResolutionDate ? (
-              <Field label="Target resolution date" value={formatDate(project.targetResolutionDate)} />
+            {project.targetResolutionDate && !inferHasBlocker(project) ? (
+              <Field label="Target Resolution Date" value={formatDate(project.targetResolutionDate)} />
             ) : null}
             <Field label="Weekly Update" value={project.weeklyUpdate} />
             <div className="rounded-xl border border-line bg-surface-muted px-4 py-3">
@@ -2203,12 +2225,8 @@ function DetailPanel({
                 />
                 <Field label="Next action" value={project.nextAction} />
                 <Field
-                  label="Target resolution date"
-                  value={
-                    project.blockerTargetResolutionDate
-                      ? formatDate(project.blockerTargetResolutionDate)
-                      : '—'
-                  }
+                  label="Target Resolution Date"
+                  value={project.targetResolutionDate ? formatDate(project.targetResolutionDate) : '—'}
                 />
               </>
             ) : (
@@ -2326,14 +2344,14 @@ function DetailPanel({
                   error={editFieldErrors?.riskReason}
                   rows={3}
                 />
-                <InputField
-                  label="Target resolution date"
-                  id="edit-target-resolution"
-                  type="date"
-                  value={draft.targetResolutionDate ?? ''}
-                  onChange={(value) => patchDraft({ targetResolutionDate: value })}
-                  error={editFieldErrors?.targetResolutionDate}
-                />
+                {showTargetResolutionAfterRiskReason(draft) ? (
+                  <TargetResolutionDateField
+                    values={draft}
+                    onPatch={patchDraft}
+                    fieldErrors={editFieldErrors}
+                    idPrefix="edit"
+                  />
+                ) : null}
               </>
             )}
             {draft.governanceStatus === 'Needs Escalation' ? (
@@ -2381,6 +2399,14 @@ function DetailPanel({
               fieldErrors={editFieldErrors}
               idPrefix="edit"
             />
+            {showTargetResolutionAfterBlocker(draft) ? (
+              <TargetResolutionDateField
+                values={draft}
+                onPatch={patchDraft}
+                fieldErrors={editFieldErrors}
+                idPrefix="edit"
+              />
+            ) : null}
             {draft.hasBlocker !== true ? (
               <TextAreaField
                 label="Next Action"
